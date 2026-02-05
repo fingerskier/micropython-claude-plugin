@@ -1,0 +1,6 @@
+{
+  "micropython": {
+    "command": "micropython-claude",
+    "args": []
+  }
+}

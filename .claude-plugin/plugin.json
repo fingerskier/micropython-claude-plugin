@@ -1,0 +1,12 @@
+{
+  "name": "micropython-claude-plugin",
+  "version": "0.1.0",
+  "description": "A plugin to interact with MicroPython devices within Claude",
+  "author": {
+    "name": "Fingerskier"
+  },
+  "repository": "https://github.com/fingerskier/micropython-claude-plugin",
+  "license": "MIT",
+  "keywords": ["micropython", "embedded", "serial", "hardware", "mcp"],
+  "mcpServers": "./.mcp.json"
+}
