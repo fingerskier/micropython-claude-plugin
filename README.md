@@ -13,3 +13,9 @@ A plugin to interact with micropython devices within Claude
   * stream output to Claude
   * let Claude send commands
  
+
+## Architecture
+
+* Python-based
+* MCP server
+* USB-Serial I/O
