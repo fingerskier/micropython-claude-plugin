@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "micropython-claude-plugin"
+version = "0.1.0"
+description = "A plugin to interact with MicroPython devices within Claude"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "mcp>=1.0.0",
+    "pyserial>=3.5",
+    "click>=8.0.0",
+]
+
+[project.scripts]
+micropython-claude = "micropython_claude_plugin.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/micropython_claude_plugin"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+]
