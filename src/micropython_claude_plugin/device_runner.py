@@ -279,14 +279,20 @@ class InteractiveSession:
 
     def get_variable(self, name: str) -> str:
         """Get the value of a variable on the device."""
+        if not name.isidentifier():
+            raise ValueError(f"Invalid variable name: {name!r}")
         return self.execute(f"print(repr({name}))")
 
     def set_variable(self, name: str, value: str) -> str:
         """Set a variable on the device."""
+        if not name.isidentifier():
+            raise ValueError(f"Invalid variable name: {name!r}")
         return self.execute(f"{name} = {value}")
 
     def import_module(self, module: str) -> str:
         """Import a module on the device."""
+        if not all(part.isidentifier() for part in module.split('.')):
+            raise ValueError(f"Invalid module name: {module!r}")
         return self.execute(f"import {module}")
 
     def reset(self) -> str:

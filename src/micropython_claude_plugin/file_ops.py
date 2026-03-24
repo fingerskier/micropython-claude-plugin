@@ -9,6 +9,26 @@ from pathlib import Path
 from .serial_connection import MicroPythonDevice
 
 
+def _sanitize_path(path: str) -> str:
+    """Sanitize a device path to prevent code injection.
+
+    Paths are interpolated into Python code strings executed on the device,
+    so we must reject characters that could break out of the string literal.
+    """
+    # Reject paths containing characters that could escape a string literal
+    # or inject code via the MicroPython REPL
+    forbidden = set('"\'\\;\n\r\x00')
+    bad_chars = forbidden & set(path)
+    if bad_chars:
+        raise ValueError(
+            f"Path contains forbidden characters: {bad_chars!r}"
+        )
+    # Normalize double slashes but preserve leading /
+    while '//' in path:
+        path = path.replace('//', '/')
+    return path
+
+
 @dataclass
 class FileInfo:
     """Information about a file on the device."""
@@ -36,6 +56,7 @@ class FileOperations:
 
     def list_files(self, path: str = "/") -> list[FileInfo]:
         """List files and directories at the given path on the device."""
+        path = _sanitize_path(path)
         code = f'''
 import os
 try:
@@ -75,6 +96,7 @@ except Exception as e:
 
     def file_exists(self, path: str) -> bool:
         """Check if a file exists on the device."""
+        path = _sanitize_path(path)
         code = f'''
 import os
 try:
@@ -88,6 +110,7 @@ except:
 
     def get_file_info(self, path: str) -> FileInfo | None:
         """Get information about a specific file."""
+        path = _sanitize_path(path)
         code = f'''
 import os
 try:
@@ -117,6 +140,7 @@ except Exception as e:
 
     def read_file(self, path: str) -> bytes:
         """Read a file from the device."""
+        path = _sanitize_path(path)
         # Read file in chunks and base64 encode to handle binary data
         code = f'''
 import ubinascii
@@ -150,6 +174,7 @@ except Exception as e:
 
     def write_file(self, path: str, content: bytes) -> None:
         """Write a file to the device."""
+        path = _sanitize_path(path)
         # Ensure parent directory exists
         parent = '/'.join(path.rsplit('/', 1)[:-1]) or '/'
         if parent != '/':
@@ -190,6 +215,7 @@ except Exception as e:
 
     def delete_file(self, path: str) -> None:
         """Delete a file from the device."""
+        path = _sanitize_path(path)
         code = f'''
 import os
 try:
@@ -204,6 +230,7 @@ except Exception as e:
 
     def mkdir(self, path: str, exist_ok: bool = False) -> None:
         """Create a directory on the device."""
+        path = _sanitize_path(path)
         code = f'''
 import os
 def mkdir_p(path):
@@ -229,6 +256,7 @@ except Exception as e:
 
     def rmdir(self, path: str, recursive: bool = False) -> None:
         """Remove a directory from the device."""
+        path = _sanitize_path(path)
         if recursive:
             code = f'''
 import os
