@@ -1,6 +1,6 @@
 {
   "name": "micropython-claude-plugin",
-  "version": "0.1.0",
+  "version": "2026.4.23",
   "description": "A plugin to interact with MicroPython devices within Claude",
   "author": {
     "name": "Fingerskier"
