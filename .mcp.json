@@ -1,6 +1,8 @@
 {
-  "micropython": {
-    "command": "micropython-claude",
-    "args": []
+  "mcpServers": {
+    "micropython": {
+      "command": "micropython-claude",
+      "args": []
+    }
   }
 }

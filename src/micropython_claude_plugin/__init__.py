@@ -1,3 +1,3 @@
 """MicroPython Claude Plugin - Interact with MicroPython devices within Claude."""
 
-__version__ = "2026.2.1"
+__version__ = "2026.4.23"
