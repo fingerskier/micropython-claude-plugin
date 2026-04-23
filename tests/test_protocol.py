@@ -129,6 +129,16 @@ class TestReadUntilTimeout:
         with pytest.raises(TimeoutError):
             dev._read_until(b'\x04>', timeout=0.2)
 
+    def test_timeout_error_exposes_partial_bytes(self):
+        """Callers need the raw partial buffer to debug protocol hangs."""
+        fake = FakeSerial()
+        dev = _make_device(fake)
+        fake.feed(b"partial data with no terminator")
+        with pytest.raises(TimeoutError) as exc_info:
+            dev._read_until(b'\x04>', timeout=0.2)
+        # Attribute, not just the message — callers can inspect bytes.
+        assert exc_info.value.partial == b"partial data with no terminator"
+
     def test_returns_on_terminator(self):
         fake = FakeSerial()
         dev = _make_device(fake)
@@ -179,6 +189,16 @@ class TestRawPasteProbe:
             dev._execute_raw_paste("print(1)", timeout=0.2)
 
     def test_raw_paste_success_roundtrip(self):
+        """Full raw-paste roundtrip with a simulated device.
+
+        Mirrors the stock MicroPython protocol exactly:
+          - Device replies ``R\\x01`` + 2-byte window size. The window
+            size bytes are the initial credit — no separate ``\\x01``
+            byte is emitted before the host has consumed a full window.
+          - Host sends code, then ``\\x04`` to signal end-of-data.
+          - Device acks with a single ``\\x04``, then emits
+            ``<stdout>\\x04<stderr>\\x04>``.
+        """
         fake = FakeSerial()
         dev = _make_device(fake)
 
@@ -186,23 +206,19 @@ class TestRawPasteProbe:
         window = 32
 
         def device_side():
-            # Probe response: supported + window size.
+            # Probe response: supported + window size (this IS the
+            # initial credit; there's no separate \x01 beforehand).
             fake.feed(b"R\x01" + struct.pack("<H", window))
-            # Initial flow credit.
-            fake.feed(b"\x01")
-            # Wait until driver has written all code bytes + Ctrl-D.
+            # Wait until driver has written code + Ctrl-D (the Ctrl-D
+            # makes up the +1 byte after the probe + code).
             deadline = time.monotonic() + 2.0
             while time.monotonic() < deadline:
-                # End of paste is driver writing code + Ctrl-D after the
-                # probe + window preamble (which was 3 bytes on the
-                # written-by-driver side).
                 if (len(fake.written) >=
                         len(b'\x05A\x01') + len(code) + 1):
                     break
                 time.sleep(0.01)
-            # Send end-of-data ack.
+            # End-of-data ack, then execution output.
             fake.feed(b'\x04')
-            # Send execution output: stdout=42\n, stderr empty.
             fake.feed(b"42\n\x04\x04>")
 
         t = threading.Thread(target=device_side)

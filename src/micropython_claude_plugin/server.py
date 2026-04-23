@@ -413,12 +413,44 @@ async def list_tools() -> list[Tool]:
     ]
 
 
+# Tools that are safe while a streaming program is running. Everything
+# else touches the raw REPL protocol, which would race the background
+# reader thread and corrupt the serial stream.
+_STREAMING_SAFE_TOOLS = frozenset({
+    "list_devices",
+    "connect",
+    "disconnect",
+    "read_output",
+    "send_input",
+    "stop_program",
+    "interrupt",
+})
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     global _device, _file_ops, _image_ops, _runner, _session
 
     # Serialize all serial I/O across concurrent tool calls.
     async with _device_lock:
+        # Reject raw-REPL-using tools while a streaming program is active.
+        # Without this, the reader thread and the raw-REPL exchange steal
+        # bytes from each other. interrupt/stop_program/read_output/
+        # send_input remain allowed so the caller can get out of the
+        # streaming state.
+        if (
+            name not in _STREAMING_SAFE_TOOLS
+            and _runner is not None
+            and _runner.is_running()
+        ):
+            return [TextContent(
+                type="text",
+                text=(
+                    f"Error: a streaming program is running. "
+                    f"{name!r} would race the background reader thread. "
+                    f"Use stop_program (or interrupt) first, then retry."
+                ),
+            )]
         return await _dispatch(name, arguments)
 
 
@@ -539,6 +571,7 @@ async def _dispatch(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 "total_size": metadata.total_size,
                 "created_at": metadata.created_at,
                 "device_info": metadata.device_info,
+                "errors": metadata.errors,
             }
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
@@ -555,13 +588,10 @@ async def _dispatch(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = get_image_ops().compare_with_image(arguments["image_path"])
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
-        # Blocking execution
+        # Blocking execution. The server-wide streaming guard in
+        # call_tool() already rejects these while a streaming session is
+        # active, so we don't re-check here.
         if name == "execute":
-            if get_runner().is_running():
-                raise RuntimeError(
-                    "A streaming program is running. Use stop_program first, "
-                    "or use read_output/send_input."
-                )
             result = get_runner().execute_code(
                 arguments["code"], arguments.get("timeout", 30)
             )
@@ -572,8 +602,6 @@ async def _dispatch(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text=output)]
 
         if name == "run_file":
-            if get_runner().is_running():
-                raise RuntimeError("A streaming program is running. Use stop_program first.")
             result = get_runner().execute_file(
                 arguments["path"], arguments.get("timeout", 30)
             )
@@ -583,8 +611,6 @@ async def _dispatch(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text=output)]
 
         if name == "run_main":
-            if get_runner().is_running():
-                raise RuntimeError("A streaming program is running. Use stop_program first.")
             result = get_runner().run_main(arguments.get("timeout", 30))
             output = result.output
             if result.error:

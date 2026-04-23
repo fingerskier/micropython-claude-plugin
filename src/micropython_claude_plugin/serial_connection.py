@@ -130,7 +130,10 @@ class MicroPythonDevice:
     def _read_until(self, terminator: bytes, timeout: float = 5.0) -> bytes:
         """Read from serial until terminator appears; raise TimeoutError on timeout.
 
-        Partial data on timeout is attached to the exception so callers can log it.
+        On timeout, the raised ``TimeoutError`` carries the full partial
+        buffer on ``.partial`` (as bytes) in addition to a truncated
+        preview in the message. Callers can log/inspect ``e.partial`` to
+        understand how far the exchange got.
         """
         ser = self._ensure_connected()
         buf = bytearray()
@@ -141,9 +144,12 @@ class MicroPythonDevice:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError(
-                        f"Timeout waiting for {terminator!r}; got {bytes(buf[-200:])!r}"
+                    err = TimeoutError(
+                        f"Timeout waiting for {terminator!r}; "
+                        f"got {bytes(buf[-200:])!r} (len={len(buf)})"
                     )
+                    err.partial = bytes(buf)  # type: ignore[attr-defined]
+                    raise err
                 ser.timeout = min(0.1, remaining)
                 n = ser.in_waiting or 1
                 chunk = ser.read(n)
@@ -155,7 +161,7 @@ class MicroPythonDevice:
             ser.timeout = prev_timeout
 
     def _read_exact(self, n: int, timeout: float = 5.0) -> bytes:
-        """Read exactly n bytes or raise TimeoutError."""
+        """Read exactly n bytes or raise TimeoutError (with .partial)."""
         ser = self._ensure_connected()
         buf = bytearray()
         deadline = time.monotonic() + timeout
@@ -164,9 +170,12 @@ class MicroPythonDevice:
             while len(buf) < n:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError(
-                        f"Timeout reading {n} bytes (got {len(buf)}): {bytes(buf)!r}"
+                    err = TimeoutError(
+                        f"Timeout reading {n} bytes (got {len(buf)}): "
+                        f"{bytes(buf)!r}"
                     )
+                    err.partial = bytes(buf)  # type: ignore[attr-defined]
+                    raise err
                 ser.timeout = min(0.1, remaining)
                 chunk = ser.read(n - len(buf))
                 if chunk:
@@ -399,10 +408,13 @@ class MicroPythonDevice:
     # ------------------------------------------------------------------
 
     def read_available(self) -> bytes:
-        ser = self._ensure_connected()
-        if ser.in_waiting:
-            return ser.read(ser.in_waiting)
-        return b''
+        # Same lock as write(): reads must not race raw-REPL exchanges or
+        # the streaming reader would steal bytes meant for the protocol.
+        with self._lock:
+            ser = self._ensure_connected()
+            if ser.in_waiting:
+                return ser.read(ser.in_waiting)
+            return b''
 
     def write(self, data: bytes) -> int:
         with self._lock:

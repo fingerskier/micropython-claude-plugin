@@ -174,9 +174,12 @@ except Exception as e:
                 raise RuntimeError(line[6:])
             if line:
                 try:
-                    data.extend(base64.b64decode(line))
-                except Exception:
-                    pass
+                    data.extend(base64.b64decode(line, validate=True))
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to decode base64 data while reading "
+                        f"{path!r}: {line!r}"
+                    ) from e
         return bytes(data)
 
     def write_file(self, path: str, content: bytes, verify: bool = True) -> None:
@@ -195,10 +198,14 @@ except Exception as e:
         with self.device.raw_repl_session():
             # Open (truncate) the device-side file handle and stash it
             # in a global so successive chunks can append without the
-            # open/close dance.
+            # open/close dance. ``_d`` is initialized to b"" here so
+            # that the final cleanup ``del`` works for empty files too
+            # (len(content)==0 means the chunk loop below runs zero
+            # times and never assigns ``_d``).
             self.device.execute(
                 f'_mcp_f = open("{path}", "wb")\n'
                 '_mcp_h = __import__("hashlib").sha256()\n'
+                '_d = b""\n'
             )
             try:
                 for i in range(0, len(content), self.WRITE_CHUNK_SIZE):
