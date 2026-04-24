@@ -1,5 +1,5 @@
 {
-  "name": "micropython-claude-plugin",
+  "name": "micropython",
   "version": "0.1.0",
   "description": "A plugin to interact with MicroPython devices within Claude",
   "author": {
