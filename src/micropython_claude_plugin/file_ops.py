@@ -1,19 +1,22 @@
 """File operations for MicroPython devices.
 
-All ops wrap their work in ``device.raw_repl_session()`` so a batch of
-operations (e.g. sync_directory) shares one raw REPL enter/exit rather
-than paying that cost per call.
+Thin adapter over ``mpremote.transport_serial.SerialTransport``'s ``fs_*``
+methods. All ops wrap their work in ``device.raw_repl_session()`` so a
+batch of operations (e.g. sync_directory) shares one raw REPL enter/exit
+rather than paying that cost per call.
 
-File writes stream via raw-paste mode in ~4 KB chunks and verify with a
-sha256 compare at the end, which is robust over flaky USB links.
+Path arguments pass through ``_sanitize_path`` at every public entry —
+mpremote interpolates paths into Python source via ``'%s' % path`` with
+no escaping, so a stray quote would inject. Sanitization is the
+single boundary that prevents that.
 """
 
-import base64
 import hashlib
-import json
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+
+from mpremote.transport import TransportError
 
 from .serial_connection import MicroPythonDevice
 
@@ -43,21 +46,39 @@ class SyncDirection(Enum):
     NEWEST = "newest"
 
 
+# Chunk size for fs_writefile / fs_readfile / fs_hashfile. mpremote's
+# default is 256 (one exec roundtrip per chunk — slow). 1 KiB strikes a
+# balance: comfortable on any MicroPython target with >= 4 KiB free RAM,
+# but few enough roundtrips that a 64 KiB transfer doesn't crawl.
+_CHUNK_SIZE = 1024
+
+
+def _wrap_fs_error(op: str, path: str):
+    """Decorator-like helper: convert mpremote's filesystem exceptions
+    into the RuntimeError shape the rest of the plugin expects."""
+    class _Ctx:
+        def __enter__(self): return self
+        def __exit__(self, exc_type, exc, tb):
+            if exc is None:
+                return False
+            if isinstance(exc, FileNotFoundError):
+                return False  # let it propagate as-is
+            if isinstance(exc, OSError):
+                raise RuntimeError(f"{op} {path}: {exc}") from exc
+            if isinstance(exc, TransportError):
+                raise RuntimeError(f"{op} {path}: {exc}") from exc
+            return False
+    return _Ctx()
+
+
 class FileOperations:
     """File operations for MicroPython devices."""
 
-    # Raw bytes per chunk when writing. 4 KiB is comfortable on any
-    # MicroPython target with >=16 KiB free RAM, and batches enough data
-    # to keep raw-paste flow control saturated.
-    WRITE_CHUNK_SIZE = 4096
-
-    # Bytes per READ chunk when streaming off device. Smaller because
-    # the *output path* (stdout of raw REPL) is line-buffered on some
-    # ports and large chunks can stall.
-    READ_CHUNK_SIZE = 1024
-
     def __init__(self, device: MicroPythonDevice):
         self.device = device
+
+    def _transport(self):
+        return self.device.transport
 
     # ------------------------------------------------------------------
     # Listing / metadata
@@ -65,82 +86,46 @@ class FileOperations:
 
     def list_files(self, path: str = "/") -> list[FileInfo]:
         path = _sanitize_path(path)
-        # JSON output avoids ambiguity around filenames containing '|' or
-        # other delimiter chars, and gives us an easy parse failure mode.
-        code = f'''
-import os, json
-_out = []
-try:
-    for name in os.listdir("{path}"):
-        full = "{path}" + ("/" if "{path}" != "/" else "") + name
-        try:
-            st = os.stat(full)
-            _out.append([name, st[6], 1 if st[0] & 0x4000 else 0, st[8] if len(st) > 8 else 0])
-        except Exception:
-            _out.append([name, 0, 0, 0])
-    print(json.dumps(_out))
-except Exception as e:
-    print("ERROR:" + str(e))
-'''
-        with self.device.raw_repl_session():
-            output = self.device.execute(code)
-        output = output.strip()
-        if output.startswith("ERROR:"):
-            raise RuntimeError(output[6:])
-        try:
-            entries = json.loads(output)
-        except json.JSONDecodeError as e:
-            raise RuntimeError(
-                f"Could not parse list_files output: {e}; raw={output!r}"
-            ) from e
+        with self.device.raw_repl_session(), _wrap_fs_error("list_files", path):
+            entries = self._transport().fs_listdir(path)
+        # entries are namedtuples (name, st_mode, st_ino, st_size).
+        # mtime isn't carried by os.ilistdir(); leave it None here. Per-
+        # entry fs_stat would add N round-trips; callers that need mtime
+        # should use get_file_info on a specific path.
         return [
             FileInfo(
-                name=name,
-                size=int(size),
-                is_dir=bool(is_dir),
-                mtime=int(mtime) if mtime else None,
+                name=e.name,
+                size=int(e.st_size),
+                is_dir=bool(e.st_mode & 0x4000),
+                mtime=None,
             )
-            for name, size, is_dir, mtime in entries
+            for e in entries
         ]
 
     def file_exists(self, path: str) -> bool:
         path = _sanitize_path(path)
-        code = f'''
-import os
-try:
-    os.stat("{path}")
-    print("EXISTS")
-except Exception:
-    print("NOT_FOUND")
-'''
-        with self.device.raw_repl_session():
-            return "EXISTS" in self.device.execute(code)
+        with self.device.raw_repl_session(), _wrap_fs_error("file_exists", path):
+            return self._transport().fs_exists(path)
 
     def get_file_info(self, path: str) -> FileInfo | None:
         path = _sanitize_path(path)
-        code = f'''
-import os, json
-try:
-    st = os.stat("{path}")
-    print(json.dumps([st[6], 1 if st[0] & 0x4000 else 0, st[8] if len(st) > 8 else 0]))
-except Exception:
-    print("NOT_FOUND")
-'''
         with self.device.raw_repl_session():
-            output = self.device.execute(code).strip()
-        if output == "NOT_FOUND":
-            return None
-        try:
-            size, is_dir, mtime = json.loads(output)
-        except json.JSONDecodeError:
-            return None
-        # Derive a sensible name; for "/" (no basename) just return "/".
+            try:
+                st = self._transport().fs_stat(path)
+            except OSError:
+                return None
+            except TransportError as e:
+                raise RuntimeError(f"get_file_info {path}: {e}") from e
         name = path.rstrip("/").rsplit("/", 1)[-1] or "/"
+        # MicroPython's stat tuple uses st[8] for mtime; os.stat_result
+        # exposes that as .st_mtime (may be 0 if the device doesn't track
+        # mtimes, e.g. on littlefs without RTC).
+        mtime = int(st.st_mtime) if st.st_mtime else None
         return FileInfo(
             name=name,
-            size=int(size),
-            is_dir=bool(is_dir),
-            mtime=int(mtime) if mtime else None,
+            size=int(st.st_size),
+            is_dir=bool(st.st_mode & 0x4000),
+            mtime=mtime,
         )
 
     # ------------------------------------------------------------------
@@ -149,168 +134,107 @@ except Exception:
 
     def read_file(self, path: str) -> bytes:
         path = _sanitize_path(path)
-        code = f'''
-import ubinascii
-try:
-    with open("{path}", "rb") as f:
-        while True:
-            chunk = f.read({self.READ_CHUNK_SIZE})
-            if not chunk:
-                break
-            print(ubinascii.b2a_base64(chunk).decode().strip())
-    print("EOF")
-except Exception as e:
-    print("ERROR:" + str(e))
-'''
-        with self.device.raw_repl_session():
-            output = self.device.execute(code, timeout=60.0)
-
-        data = bytearray()
-        for line in output.strip().split('\n'):
-            line = line.strip()
-            if line == 'EOF':
-                break
-            if line.startswith('ERROR:'):
-                raise RuntimeError(line[6:])
-            if line:
-                try:
-                    data.extend(base64.b64decode(line, validate=True))
-                except Exception as e:
-                    raise RuntimeError(
-                        f"Failed to decode base64 data while reading "
-                        f"{path!r}: {line!r}"
-                    ) from e
+        with self.device.raw_repl_session(), _wrap_fs_error("read_file", path):
+            data = self._transport().fs_readfile(path, chunk_size=_CHUNK_SIZE)
         return bytes(data)
 
     def write_file(self, path: str, content: bytes, verify: bool = True) -> None:
-        """Write bytes to the device. Keeps raw REPL open and keeps a file
-        handle alive across chunks via a module-level variable on the device.
+        """Write bytes to the device. Optionally verify with sha256.
+
+        Parent directories are created with ``mkdir(exist_ok=True)`` so
+        callers don't have to pre-create them.
         """
         path = _sanitize_path(path)
-
-        # Ensure parent directory exists.
-        parent = path.rsplit('/', 1)[0]
-        if parent and parent != '/':
-            self.mkdir(parent, exist_ok=True)
-
-        host_hash = hashlib.sha256(content).hexdigest()
-
-        with self.device.raw_repl_session():
-            # Open (truncate) the device-side file handle and stash it
-            # in a global so successive chunks can append without the
-            # open/close dance. ``_d`` is initialized to b"" here so
-            # that the final cleanup ``del`` works for empty files too
-            # (len(content)==0 means the chunk loop below runs zero
-            # times and never assigns ``_d``).
-            self.device.execute(
-                f'_mcp_f = open("{path}", "wb")\n'
-                '_mcp_h = __import__("hashlib").sha256()\n'
-                '_d = b""\n'
+        if not isinstance(content, (bytes, bytearray)):
+            raise TypeError(
+                f"write_file requires bytes, got {type(content).__name__}"
             )
-            try:
-                for i in range(0, len(content), self.WRITE_CHUNK_SIZE):
-                    chunk = content[i:i + self.WRITE_CHUNK_SIZE]
-                    b64 = base64.b64encode(chunk).decode('ascii')
-                    code = (
-                        'import ubinascii\n'
-                        f'_d = ubinascii.a2b_base64(b"{b64}")\n'
-                        '_mcp_f.write(_d)\n'
-                        '_mcp_h.update(_d)\n'
-                    )
-                    # Tight per-chunk timeout scales with chunk size at
-                    # 115200 baud: ~90 ms per KiB raw, doubled for base64
-                    # overhead + safety margin.
-                    self.device.execute(code, timeout=max(5.0, len(chunk) / 2000))
-            finally:
-                # Close and fetch the device-side hash.
-                out = self.device.execute(
-                    '_mcp_f.close()\n'
-                    'import ubinascii\n'
-                    'print(ubinascii.hexlify(_mcp_h.digest()).decode())\n'
-                    'del _mcp_f, _mcp_h, _d\n'
-                ).strip()
 
-        if verify:
-            device_hash = out.splitlines()[-1].strip() if out else ""
-            if device_hash != host_hash:
-                raise RuntimeError(
-                    f"Post-write hash mismatch for {path}: "
-                    f"host={host_hash} device={device_hash}"
+        parent = path.rsplit('/', 1)[0]
+        with self.device.raw_repl_session():
+            if parent and parent != '/':
+                self.mkdir(parent, exist_ok=True)
+            with _wrap_fs_error("write_file", path):
+                self._transport().fs_writefile(
+                    path, bytes(content), chunk_size=_CHUNK_SIZE
                 )
+            if verify:
+                host_hash = hashlib.sha256(content).digest()
+                with _wrap_fs_error("write_file (verify)", path):
+                    device_hash = self._transport().fs_hashfile(
+                        path, "sha256", chunk_size=_CHUNK_SIZE
+                    )
+                if device_hash != host_hash:
+                    raise RuntimeError(
+                        f"Post-write hash mismatch for {path}: "
+                        f"host={host_hash.hex()} device={device_hash.hex()}"
+                    )
 
     def delete_file(self, path: str) -> None:
         path = _sanitize_path(path)
-        code = f'''
-import os
-try:
-    os.remove("{path}")
-    print("OK")
-except Exception as e:
-    print("ERROR:" + str(e))
-'''
-        with self.device.raw_repl_session():
-            output = self.device.execute(code)
-        if 'ERROR:' in output:
-            raise RuntimeError(output.split('ERROR:', 1)[1].strip())
+        with self.device.raw_repl_session(), _wrap_fs_error("delete_file", path):
+            self._transport().fs_rmfile(path)
 
     def mkdir(self, path: str, exist_ok: bool = False) -> None:
+        """Create directory, optionally creating parents (mkdir -p style).
+
+        Walks the path one segment at a time so an intermediate segment
+        already existing doesn't fail the whole call when ``exist_ok``.
+        """
         path = _sanitize_path(path)
-        code = f'''
-import os
-def _mk(p):
-    cur = ""
-    for part in p.strip("/").split("/"):
-        if not part:
-            continue
-        cur = cur + "/" + part
-        try:
-            os.mkdir(cur)
-        except OSError as e:
-            if e.args[0] != 17:  # EEXIST
-                raise
-try:
-    _mk("{path}")
-    print("OK")
-except Exception as e:
-    print("ERROR:" + str(e))
-'''
+        parts = [p for p in path.strip("/").split("/") if p]
+        if not parts:
+            return  # "/" — nothing to do
         with self.device.raw_repl_session():
-            output = self.device.execute(code)
-        if 'ERROR:' in output and not exist_ok:
-            raise RuntimeError(output.split('ERROR:', 1)[1].strip())
+            cur = ""
+            transport = self._transport()
+            for part in parts:
+                cur = cur + "/" + part
+                try:
+                    transport.fs_mkdir(cur)
+                except OSError as e:
+                    # EEXIST (errno 17) is fine if exist_ok or if this is
+                    # an intermediate segment of a deeper mkdir.
+                    if e.errno == 17 and (exist_ok or cur != "/" + "/".join(parts)):
+                        continue
+                    if not exist_ok:
+                        raise RuntimeError(f"mkdir {cur}: {e}") from e
+                except TransportError as e:
+                    raise RuntimeError(f"mkdir {cur}: {e}") from e
 
     def rmdir(self, path: str, recursive: bool = False) -> None:
         path = _sanitize_path(path)
-        if recursive:
-            code = f'''
-import os
-def _rm(p):
-    for entry in os.listdir(p):
-        full = p + "/" + entry
-        if os.stat(full)[0] & 0x4000:
-            _rm(full)
-        else:
-            os.remove(full)
-    os.rmdir(p)
-try:
-    _rm("{path}")
-    print("OK")
-except Exception as e:
-    print("ERROR:" + str(e))
-'''
-        else:
-            code = f'''
-import os
-try:
-    os.rmdir("{path}")
-    print("OK")
-except Exception as e:
-    print("ERROR:" + str(e))
-'''
         with self.device.raw_repl_session():
-            output = self.device.execute(code, timeout=60.0)
-        if 'ERROR:' in output:
-            raise RuntimeError(output.split('ERROR:', 1)[1].strip())
+            if recursive:
+                self._rmdir_recursive(path)
+                return
+            with _wrap_fs_error("rmdir", path):
+                self._transport().fs_rmdir(path)
+
+    def _rmdir_recursive(self, path: str) -> None:
+        """Walk the tree under ``path`` and delete everything, then rmdir.
+
+        Holds a single raw REPL session for the whole walk (caller's
+        responsibility — ``rmdir`` already opened one).
+        """
+        transport = self._transport()
+        try:
+            entries = transport.fs_listdir(path)
+        except TransportError as e:
+            raise RuntimeError(f"rmdir {path}: {e}") from e
+        for entry in entries:
+            full = f"{path.rstrip('/')}/{entry.name}"
+            if entry.st_mode & 0x4000:
+                self._rmdir_recursive(full)
+            else:
+                try:
+                    transport.fs_rmfile(full)
+                except (OSError, TransportError) as e:
+                    raise RuntimeError(f"rmdir {full}: {e}") from e
+        try:
+            transport.fs_rmdir(path)
+        except (OSError, TransportError) as e:
+            raise RuntimeError(f"rmdir {path}: {e}") from e
 
     # ------------------------------------------------------------------
     # Host <-> device
@@ -435,8 +359,6 @@ except Exception as e:
                 for rel in sorted(_rel_remote_files()):
                     rf = f"{remote_dir}/{rel}".replace("\\", "/")
                     lf = local_dir / rel
-                    # Under NEWEST we may have already synced this file in
-                    # the upload pass; skip if local exists.
                     if direction == SyncDirection.NEWEST and lf.exists():
                         continue
                     try:
