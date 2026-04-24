@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "micropython-claude-plugin"
-version = "2026.4.25"
+version = "2026.4.26"
 description = "A plugin to interact with MicroPython devices within Claude"
 readme = "README.md"
 requires-python = ">=3.10"
