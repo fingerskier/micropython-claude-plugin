@@ -52,6 +52,19 @@ pip install -e .
 }
 ```
 
+### mpremote
+
+The plugin's venv ships [mpremote](https://docs.micropython.org/en/latest/reference/mpremote.html)
+for ad-hoc command-line use. Invoke it through the bundled shim — bootstrap is
+shared with the MCP server so the venv is auto-created on first call:
+
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/bin/mpremote.py" connect COM4 ls :
+```
+
+Or call the venv binary directly: `${CLAUDE_PLUGIN_DATA}/venv/Scripts/mpremote.exe`
+(Windows) / `${CLAUDE_PLUGIN_DATA}/venv/bin/mpremote` (POSIX).
+
 ## Usage
 
 ### Running the MCP Server manually
