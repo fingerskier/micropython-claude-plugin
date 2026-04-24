@@ -22,31 +22,24 @@ A plugin to interact with micropython devices within Claude
 
 ## Installation
 
+### Claude Code (recommended)
+
+Install the plugin from the marketplace — no manual setup. On first use, the
+plugin's launcher (`bin/launch.py`) creates an isolated venv under
+`${CLAUDE_PLUGIN_DATA}/venv`, installs itself into it, and starts the MCP
+server. Plugin updates are detected by content hash and re-installed
+automatically on the next MCP server start.
+
+The only host requirement is `python` (3.10+) on `PATH`.
+
+### Claude Desktop / other MCP hosts
+
+Install the package into a Python environment and point your MCP host at the
+console script:
+
 ```bash
 pip install -e .
 ```
-
-Or install dependencies directly:
-
-```bash
-pip install mcp pyserial click
-```
-
-## Usage
-
-### Running the MCP Server
-
-```bash
-# Start the server (connects to device when requested via tools)
-micropython-claude
-
-# Or auto-connect to a specific port on startup
-micropython-claude --port /dev/ttyUSB0 --baudrate 115200
-```
-
-### Claude Desktop Configuration
-
-Add to your `claude_desktop_config.json`:
 
 ```json
 {
@@ -57,6 +50,28 @@ Add to your `claude_desktop_config.json`:
     }
   }
 }
+```
+
+## Usage
+
+### Running the MCP Server manually
+
+```bash
+# Start the server (connects to device when requested via tools)
+micropython-claude
+
+# Or auto-connect to a specific port on startup
+micropython-claude --port /dev/ttyUSB0 --baudrate 115200
+```
+
+## Development
+
+For contributors hacking on the server itself, install editable and run the
+console script directly — bypassing the launcher:
+
+```bash
+pip install -e .
+micropython-claude
 ```
 
 ## Available Tools
