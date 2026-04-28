@@ -351,26 +351,46 @@ def test_i06_delete_marker_push_image(r: TestResult, file_ops: FileOperations, i
 
 
 def test_i07_compare_after_restore(r: TestResult, image_ops: ImageOperations):
-    """Compare after restore - should show minimal differences."""
+    """Compare after restore - device must match image exactly.
+
+    image_ops.compare_with_image() compares by size + sha256 only (NOT
+    mtime), so re-write timestamp drift cannot cause a false failure.
+    After test_i06's push (which restored the image we pulled in i01),
+    every file in the image must be on the device with matching content,
+    and the device must hold no files outside the image.
+    """
     diff = image_ops.compare_with_image(str(IMAGE_PATH))
 
     only_device = diff.get("only_on_device", [])
     only_image = diff.get("only_in_image", [])
     different = diff.get("different", [])
+    matching = diff.get("matching", [])
 
-    r.passed = True
     r.detail = (
-        f"After restore: {len(diff.get('matching', []))} matching, "
+        f"After restore: {len(matching)} matching, "
         f"{len(different)} different, "
         f"{len(only_device)} only_on_device, "
         f"{len(only_image)} only_in_image"
     )
-    # Note: We don't assert zero diffs because mtime or size could vary
-    # after re-writing. We just report the state.
     if only_image:
         r.detail += f" | only_in_image: {only_image}"
     if only_device:
         r.detail += f" | only_on_device: {only_device}"
+    if different:
+        r.detail += f" | different: {different}"
+
+    assert different == [], (
+        f"Files with content/size diffs after restore: {different}"
+    )
+    assert only_image == [], (
+        f"Image has files not on device after restore: {only_image}"
+    )
+    assert only_device == [], (
+        f"Device has files not in image after restore: {only_device}"
+    )
+    assert len(matching) > 0, "compare_with_image returned zero matches"
+
+    r.passed = True
 
 
 def test_i08_cleanup_archive(r: TestResult):

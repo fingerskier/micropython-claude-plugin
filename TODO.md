@@ -40,12 +40,16 @@ _Generated 2026-04-27. Sources: Reqall (project #842), GitHub
   (`WriteFile failed PermissionError(13)` from the Win32 layer) — captured
   separately as a hardware-side finding, not a plugin defect.
 
-- [ ] **3. Strict assertions in `test_i07_compare_after_restore`.**
-  Today the test only reports diffs. Tighten to `assert different == []` after
-  `push_image(clean=False)`; if mtime drift makes that flaky, restrict the
-  assert to size + sha256 (already what `compare_with_image` uses) and document
-  why mtime is excluded. Required to make the eval suite a real regression
-  gate.
+- [x] **3. Strict assertions in `test_i07_compare_after_restore`.** ✅
+  `compare_with_image` already compares by size + sha256 only (NOT mtime),
+  so re-write timestamp drift cannot cause a false failure — documented
+  this in the test docstring. Hardened assertions to require `different`,
+  `only_on_device`, and `only_in_image` all `== []`, plus
+  `len(matching) > 0` to catch a degenerate empty-archive case. Verified
+  RED→GREEN on COM4: deliberate `assert different == ["__RED_PROOF__"]`
+  caught (RED), reverted to `[]`, full hardware eval 21/21 PASS, unit
+  tests still 40/40. Eval suite is now a real regression gate for image
+  roundtrip.
 
 - [ ] **4. `push_image(clean=True, allow_root_wipe=True)` end-to-end.**
   Never exercised in hardware. Use device B as the wipe target: pull golden
