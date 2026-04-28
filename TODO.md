@@ -125,12 +125,29 @@ _Generated 2026-04-27. Sources: Reqall (project #842), GitHub
   bytes uploaded and read back GREEN). Hardware eval regression
   21/21 PASS.
 
-- [ ] **9. Streaming guard rejects raw-REPL tools while a program runs.**
-  `server.py:419` defines `_STREAMING_SAFE_TOOLS`. No test exercises the
-  reject path. Add a hardware test: `start_program` with an infinite loop on
-  device A, then call `list_files` via the server dispatch and assert the
-  returned `TextContent` says "would race the background reader thread", then
-  `stop_program` cleanly exits. Prevents reader-thread / raw-REPL data races.
+- [x] **9. Streaming guard rejects raw-REPL tools while a program runs.** ✅
+  Two new test files. `tests/test_streaming_guard.py` (12 unit tests, no
+  hardware): patches `server._runner` with a fake whose `is_running()`
+  is the only honest attribute, then drives `srv.call_tool(...)` through
+  asyncio. Covers (a) parametrized reject path for 7 raw-REPL-driving
+  tools (`list_files`, `read_file`, `write_file`, `delete_file`,
+  `execute_code`, `pull_image`, `push_image`) — each returns the
+  streaming-active error naming the rejected tool; (b) safe-tool
+  exemption (`list_devices` dispatches even when running); (c) no-runner
+  short-circuit; (d) finished-runner short-circuit; (e) safe-set
+  invariants — must contain `stop_program`/`interrupt`/`read_output`/
+  `send_input` (recovery path) and must NOT contain raw-REPL drivers.
+  RED: gated `if False and (...)` → 7/12 fail; reverted → 12/12 pass;
+  full unit suite 71/71. Hardware test
+  `tests/test_streaming_guard_hw.py` runs the full lifecycle on COM4:
+  connects, `start_program` with `while True: print('tick',i); i+=1;
+  time.sleep(0.1)` (single-line — multi-line blocks don't terminate
+  through line-by-line REPL feeding because of MicroPython's auto-
+  indent on continuation), drains REPL echo, confirms `tick` output,
+  attempts `list_files` (rejected with the guard message), confirms
+  the stream is still emitting `tick` lines uncorrupted, calls
+  `stop_program`, then re-issues `list_files` and asserts a real JSON
+  listing comes back (proves the guard releases). PASS on COM4.
 
 - [ ] **10. Disconnect / reconnect / serial-flake recovery.**
   No test confirms the plugin recovers from USB drop. Required scenarios:
