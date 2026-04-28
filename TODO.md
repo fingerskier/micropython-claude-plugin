@@ -76,12 +76,18 @@ _Generated 2026-04-27. Sources: Reqall (project #842), GitHub
   Verified RED (mutated `if delete_orphans:` to `if False and delete_orphans:`
   → 3/3 fail) → GREEN on COM4 (3/3 PASS, unit suite still 48/48).
 
-- [ ] **6. Concurrent two-device sessions don't cross-talk.**
-  Construct two `MicroPythonDevice` instances (COM3, COM4) in one process,
-  open `raw_repl_session` on both, run `list_files("/")` on each, and verify
-  per-device `transport.serial` isolation (no shared global state, no port
-  mix-up). Catches regressions in `serial_connection.py` if the lock or
-  transport handle ever becomes module-scoped.
+- [x] **6. Concurrent two-device sessions don't cross-talk.** ✅
+  Implemented `tests/test_concurrent_devices.py` (COM4 + COM11). Four
+  isolation invariants: (a) `_transport`, `transport.serial`, and `_lock`
+  must be distinct per-instance; (b) opening `raw_repl_session` on A
+  does NOT flip B's `transport.in_raw_repl`; (c) parallel `list_files("/")`
+  on two threads finishes for both inside 20 s with no deadlock; (d)
+  marker file written on A is invisible on B's listing AND reads back
+  correctly on A — the strongest cross-talk smoke test, since a port
+  mix-up or shared transport would either leak the marker or corrupt
+  the read. Verified RED: temporarily aliased `self._lock` to a class
+  attribute (`MicroPythonDevice._shared_red_lock`) → "Distinct per-device
+  state" caught it. Reverted; 4/4 PASS, unit suite still 48/48.
 
 - [ ] **7. Push platform mismatch behavior is defined and tested.**
   Today `push_image` will happily restore an RP2040 image onto an ESP32. Decide:
