@@ -89,12 +89,22 @@ _Generated 2026-04-27. Sources: Reqall (project #842), GitHub
   attribute (`MicroPythonDevice._shared_red_lock`) → "Distinct per-device
   state" caught it. Reverted; 4/4 PASS, unit suite still 48/48.
 
-- [ ] **7. Push platform mismatch behavior is defined and tested.**
-  Today `push_image` will happily restore an RP2040 image onto an ESP32. Decide:
-  warn, refuse, or write a `metadata.device_info.platform` mismatch field. Add a
-  test that pulls from A, fakes a different `platform` in the archive
-  metadata, and asserts the chosen behavior. (If kept silent, document it in
-  the tool description.)
+- [x] **7. Push platform mismatch behavior is defined and tested.** ✅
+  Decision: **refuse-by-default** with explicit `allow_platform_mismatch=True`
+  bypass — mirrors the `allow_root_wipe` pattern. `image_ops.push_image` now
+  pre-reads the archive's `.micropython_image_metadata.json`, gets the
+  current device platform via `get_device_info()`, and raises `ValueError`
+  when both are known and differ. Archives without metadata or without a
+  `device_info.platform` field DO NOT trigger the guard (compatible with
+  legacy backups). Guard runs BEFORE any device wipe so a cross-platform
+  restore can't accidentally brick the device. `restore_snapshot`
+  propagates the new arg. Added `tests/test_image_ops_guard.py` platform
+  cases (8 new tests covering refuse default, error-message content,
+  same-platform pass-through, opt-in bypass, no-metadata silence,
+  metadata-without-device_info silence, guard-before-wipe ordering, and
+  `restore_snapshot` inheritance). RED→GREEN: gated `if False and ...`
+  → 4/16 fail; reverted → 16/16 pass; full unit suite 56/56;
+  `test_hardware_eval.py` 21/21 (same-platform restore unaffected).
 
 - [ ] **8. `sync_file(NEWEST)` when device mtime is 0 / None.**
   `file_ops.py:292` falls back to `0`, so local always wins on littlefs targets

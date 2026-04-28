@@ -168,6 +168,7 @@ except Exception as e:
         target_path: str = "/",
         clean: bool = False,
         allow_root_wipe: bool = False,
+        allow_platform_mismatch: bool = False,
     ) -> dict:
         """Push a filesystem image to the device.
 
@@ -178,6 +179,15 @@ except Exception as e:
             allow_root_wipe: Required to be True when both ``clean`` is
                 True and ``target_path`` is "/". Guards against
                 accidentally wiping boot.py/main.py and bricking a device.
+            allow_platform_mismatch: Required to be True when the
+                archive's recorded ``device_info.platform`` differs from
+                the connected device's current ``platform``. Refuses
+                cross-platform restores by default (e.g. RP2040 image
+                onto an ESP32) since boot/SDK assumptions diverge.
+                Archives written without metadata, or without a
+                ``device_info.platform`` field, do NOT trigger the
+                guard — the check fires only when both platforms are
+                known AND differ.
         """
         image_path = Path(image_path)
         if not image_path.exists():
@@ -190,6 +200,8 @@ except Exception as e:
                 "reflashing to recover."
             )
 
+        archive_metadata = self._read_archive_metadata(image_path)
+
         results: dict = {
             "files_written": 0,
             "bytes_written": 0,
@@ -199,6 +211,29 @@ except Exception as e:
         }
 
         with self.device.raw_repl_session():
+            archive_platform = None
+            if archive_metadata and isinstance(archive_metadata.get("device_info"), dict):
+                archive_platform = archive_metadata["device_info"].get("platform")
+            current_platform = None
+            if archive_platform is not None:
+                try:
+                    current_platform = self.get_device_info().get("platform")
+                except Exception:
+                    current_platform = None
+
+            if (
+                archive_platform is not None
+                and current_platform is not None
+                and archive_platform != current_platform
+                and not allow_platform_mismatch
+            ):
+                raise ValueError(
+                    f"Image platform '{archive_platform}' does not match "
+                    f"device platform '{current_platform}'. Pass "
+                    f"allow_platform_mismatch=True to override (boot/SDK "
+                    f"assumptions may diverge across MicroPython ports)."
+                )
+
             if clean:
                 if target_path == "/":
                     # Wipe each top-level entry — ``rmdir("/")`` is not
@@ -250,6 +285,24 @@ except Exception as e:
 
         return results
 
+    def _read_archive_metadata(self, image_path: Path) -> dict | None:
+        """Return the parsed ``.micropython_image_metadata.json`` entry
+        from an image archive, or None if the archive lacks one or the
+        entry can't be parsed. Used by the platform-mismatch guard so
+        the check runs before any device wipe."""
+        try:
+            with tarfile.open(image_path, "r:*") as tar:
+                try:
+                    member = tar.getmember(".micropython_image_metadata.json")
+                except KeyError:
+                    return None
+                f = tar.extractfile(member)
+                if f is None:
+                    return None
+                return json.loads(f.read().decode("utf-8"))
+        except (tarfile.TarError, json.JSONDecodeError, OSError):
+            return None
+
     def _collect_files_recursive(self, path: str) -> list:
         files = []
         try:
@@ -271,12 +324,14 @@ except Exception as e:
         snapshot_path: str | Path,
         clean: bool = True,
         allow_root_wipe: bool = False,
+        allow_platform_mismatch: bool = False,
     ) -> dict:
         return self.push_image(
             snapshot_path,
             target_path="/",
             clean=clean,
             allow_root_wipe=allow_root_wipe,
+            allow_platform_mismatch=allow_platform_mismatch,
         )
 
     def compare_with_image(self, image_path: str | Path) -> dict:
