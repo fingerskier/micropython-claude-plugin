@@ -106,12 +106,24 @@ _Generated 2026-04-27. Sources: Reqall (project #842), GitHub
   → 4/16 fail; reverted → 16/16 pass; full unit suite 56/56;
   `test_hardware_eval.py` 21/21 (same-platform restore unaffected).
 
-- [ ] **8. `sync_file(NEWEST)` when device mtime is 0 / None.**
-  `file_ops.py:292` falls back to `0`, so local always wins on littlefs targets
-  without an RTC. Untested and surprising. Add a test that stubs
-  `get_file_info` to return `mtime=None`, asserts the documented fallback, and
-  add a hardware case on a device whose `os.stat` returns 0 mtime (most RP2040
-  builds).
+- [x] **8. `sync_file(NEWEST)` when device mtime is 0 / None.** ✅
+  Fallback was real (`file_ops.py:292`: `remote_info.mtime or 0` → local
+  always wins) but undocumented and untested. Added 3 unit tests in
+  `tests/test_fileops_adapter.py::TestSyncFileNewestMtimeFallback`:
+  (a) end-to-end via `fs_stat` returning `st_mtime=0` → upload; (b)
+  direct `monkeypatch` stub of `get_file_info` returning `mtime=None`
+  → upload; (c) edge case where BOTH local mtime (via `os.utime(p,
+  (0,0))`) and remote mtime resolve to 0 → "in sync", no transfer
+  (proves the fallback is symmetric, not absolute local-wins). Also
+  added a docstring to `sync_file()` documenting the contract and
+  pointing to the test class. Verified RED via mutation
+  (`or 0` → `or 9999999999999`) → 3/3 fail; reverted → 3/3 pass; full
+  unit suite 59/59. Hardware sanity script
+  `tests/test_sync_file_newest_hw.py` confirms the behavior end-to-end
+  on COM4 (Pimoroni Tiny 2040 reports a non-zero pseudo-RTC mtime
+  ≈ 2021 epoch, so host's current Unix mtime always wins; local
+  bytes uploaded and read back GREEN). Hardware eval regression
+  21/21 PASS.
 
 - [ ] **9. Streaming guard rejects raw-REPL tools while a program runs.**
   `server.py:419` defines `_STREAMING_SAFE_TOOLS`. No test exercises the

@@ -257,6 +257,18 @@ class FileOperations:
         remote_path: str,
         direction: SyncDirection = SyncDirection.NEWEST,
     ) -> str:
+        """Sync a single file between host and device.
+
+        ``NEWEST`` direction note: MicroPython on littlefs without an RTC
+        reports ``os.stat().st_mtime == 0`` (or returns it as ``None``
+        through ``get_file_info``). When the remote mtime is missing,
+        the comparison falls back to ``0``, so any local file with a
+        non-zero mtime wins and gets uploaded. If the local file *also*
+        has a zero mtime (e.g. set via ``os.utime(p, (0, 0))``) the two
+        sides compare equal and the call reports "in sync" without a
+        transfer. Tests pin this contract; see
+        ``tests/test_fileops_adapter.py::TestSyncFileNewestMtimeFallback``.
+        """
         local_path = Path(local_path)
 
         with self.device.raw_repl_session():
@@ -289,6 +301,11 @@ class FileOperations:
                 return f"Uploaded {local_path} (remote didn't exist)"
 
             local_mtime = int(local_path.stat().st_mtime)
+            # Fallback: device with no RTC reports mtime as 0 (→ None
+            # via get_file_info). Local file with current Unix time then
+            # always wins. Documented in the docstring above. If both
+            # sides resolve to 0, they compare equal and we report "in
+            # sync" — no transfer.
             remote_mtime = remote_info.mtime or 0  # type: ignore[union-attr]
 
             if local_mtime > remote_mtime:

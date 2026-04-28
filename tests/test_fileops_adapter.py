@@ -381,5 +381,82 @@ class TestErrorMapping:
             fs.write_file("/x.txt", b"data", verify=False)
 
 
+# ---------------------------------------------------------------------------
+# sync_file(NEWEST) — fallback when device reports no mtime
+# ---------------------------------------------------------------------------
+
+
+class TestSyncFileNewestMtimeFallback:
+    """sync_file(NEWEST) when device reports no mtime (TODO #8).
+
+    MicroPython on littlefs without an RTC reports st_mtime=0;
+    FileOperations.get_file_info converts that to FileInfo.mtime=None.
+    sync_file's NEWEST branch then resolves remote mtime via
+    ``remote_info.mtime or 0`` (file_ops.py:292), so any local file with a
+    non-zero mtime wins. This is the documented fallback: local always
+    wins when the device has no clock. These tests pin that contract so a
+    future refactor (e.g. ``... or local_mtime`` to mean "no opinion → in
+    sync") trips a guard rather than silently flipping direction.
+    """
+
+    @staticmethod
+    def _make_local(tmp_path: Path, name: str = "main.py", body: bytes = b"print('host')") -> Path:
+        local = tmp_path / name
+        local.write_bytes(body)
+        return local
+
+    def test_remote_mtime_zero_uploads_local(self, fs, fake_transport, tmp_path):
+        """End-to-end through fs_stat: device reports st_mtime=0, sync
+        uploads. Validates the get_file_info → 0→None → 'or 0' → local-wins
+        chain in one shot."""
+        local = self._make_local(tmp_path)
+        fake_transport.stat_response["/main.py"] = StatResult(0o100644, len(local.read_bytes()), st_mtime=0)
+        fake_transport.hashfile_response["/main.py"] = hashlib.sha256(local.read_bytes()).digest()
+
+        result = fs.sync_file(local, "/main.py")
+        assert "Uploaded" in result and "local is newer" in result, result
+        assert "fs_writefile" in call_names(fake_transport)
+
+    def test_remote_mtime_None_via_stub_uploads_local(
+        self, fs, fake_transport, tmp_path, monkeypatch
+    ):
+        """Direct stub of get_file_info → mtime=None. Locks the contract
+        independently of the stat-tuple round-trip — if the FileInfo
+        adapter ever stops mapping 0→None, this test still pins the
+        sync_file behavior."""
+        local = self._make_local(tmp_path)
+        fake_transport.hashfile_response["/main.py"] = hashlib.sha256(local.read_bytes()).digest()
+        monkeypatch.setattr(
+            fs, "get_file_info",
+            lambda path: FileInfo(name="main.py", size=len(local.read_bytes()), is_dir=False, mtime=None),
+        )
+
+        result = fs.sync_file(local, "/main.py")
+        assert "Uploaded" in result and "local is newer" in result, result
+        assert "fs_writefile" in call_names(fake_transport)
+
+    def test_remote_None_and_local_zero_treated_as_in_sync(
+        self, fs, fake_transport, tmp_path, monkeypatch
+    ):
+        """Edge case proving the fallback is symmetric, not absolute:
+        BOTH sides resolve to 0 → equal → in sync, no transfer. Ensures
+        a future "local always wins" interpretation doesn't sneak in.
+        """
+        import os
+        local = tmp_path / "epoch.txt"
+        local.write_bytes(b"x")
+        os.utime(local, (0, 0))  # local mtime → 0
+        monkeypatch.setattr(
+            fs, "get_file_info",
+            lambda path: FileInfo(name="epoch.txt", size=1, is_dir=False, mtime=None),
+        )
+
+        result = fs.sync_file(local, "/epoch.txt")
+        assert "in sync" in result.lower(), result
+        names = call_names(fake_transport)
+        assert "fs_writefile" not in names
+        assert "fs_readfile" not in names
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
