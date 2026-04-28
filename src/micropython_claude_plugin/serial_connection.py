@@ -220,8 +220,13 @@ class MicroPythonDevice:
         """Execute Python code, return (stdout, stderr)."""
         with self._lock:
             with self.raw_repl_session():
-                transport = self._ensure_transport()
                 for attempt in range(self.RECONNECT_RETRIES + 1):
+                    # Re-fetch the transport every iteration: a retry
+                    # may have called _reopen, which builds a fresh
+                    # SerialTransport. Capturing this once before the
+                    # loop would route the retry call back through the
+                    # closed handle.
+                    transport = self._ensure_transport()
                     try:
                         stdout, stderr = transport.exec_raw(
                             code.encode('utf-8'), timeout=timeout

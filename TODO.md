@@ -149,13 +149,39 @@ _Generated 2026-04-27. Sources: Reqall (project #842), GitHub
   `stop_program`, then re-issues `list_files` and asserts a real JSON
   listing comes back (proves the guard releases). PASS on COM4.
 
-- [ ] **10. Disconnect / reconnect / serial-flake recovery.**
-  No test confirms the plugin recovers from USB drop. Required scenarios:
-  (a) call `disconnect` mid raw-REPL session; (b) yank USB on device B during a
-  large `write_file`, reconnect, retry, assert success; (c) post-error
-  `_device_lock` is released and subsequent tool calls don't deadlock. Some
-  parts can be unit-tested with a fake transport that raises `TransportError`
-  mid-call; the USB-yank case is hardware-only.
+- [x] **10. Disconnect / reconnect / serial-flake recovery.** ✅
+  Implemented `tests/test_recovery.py` (10 unit tests, no hardware) using
+  a `FakeTransport` that monkey-patches `serial_connection.SerialTransport`
+  and serves a programmable script of effects (raise SerialException once,
+  raise unconditionally, etc.). Coverage:
+  * **Disconnect contracts** (5 tests): clean exit while in raw-REPL,
+    no `exit_raw_repl` call when never entered, idempotent on
+    never-connected, idempotent on second call, and crucially —
+    swallows a raising `exit_raw_repl` so a leaked transport can't
+    wedge the lock forever.
+  * **Retry / recovery** (3 tests): one SerialException → reopen →
+    second attempt succeeds (asserts new transport built); every
+    attempt raises → SerialException propagates after 2 total
+    attempts (initial + RECONNECT_RETRIES); TransportError converts
+    to RuntimeError without retry (protocol error, not transport drop).
+  * **Lock release** (2 tests): execute_raw raising leaves the lock
+    available (verified with a thread + 5s join timeout); disconnect
+    where transport.close() raises still releases the lock.
+
+  **The retry test caught a real bug**: `execute_raw` captured
+  `transport = self._ensure_transport()` once before the retry loop,
+  so retries kept calling the OLD (closed) transport instead of the
+  new one built by `_reopen()`. Fixed by moving the fetch inside the
+  loop. RED confirmed by reverting just the fix → exhaustion test
+  fails; re-applying the fix → all 10 pass.
+
+  Hardware USB-yank scenario (yank cable during a large write,
+  reconnect, retry) is necessarily out-of-scope for an unattended
+  unit test — captured as Reqall #2141 (Pico W on COM11 sustained
+  CDC writes ≥64 KiB).
+
+  Verified RED → GREEN on the regression bug; full unit suite
+  81/81; hardware eval 21/21 on COM4.
 
 ## Out of scope (already covered)
 - Path sanitization (`#899`, 10 unit tests, all pass).
