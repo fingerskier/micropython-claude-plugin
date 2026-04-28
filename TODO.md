@@ -51,11 +51,17 @@ _Generated 2026-04-27. Sources: Reqall (project #842), GitHub
   tests still 40/40. Eval suite is now a real regression gate for image
   roundtrip.
 
-- [ ] **4. `push_image(clean=True, allow_root_wipe=True)` end-to-end.**
-  Never exercised in hardware. Use device B as the wipe target: pull golden
-  image from A, wipe B, restore, assert match against image. Verify the guard
-  on `clean=True, target_path='/'` without `allow_root_wipe` still raises
-  `ValueError` (unit test against `image_ops.py` is fine for the guard alone).
+- [x] **4. `push_image(clean=True, allow_root_wipe=True)` end-to-end.** ✅
+  End-to-end happy path is already covered by `test_cross_device_image.py`
+  (TODO #1): A → image → wipe B → restore → exact-match assertion. The
+  remaining gap was the **guard** path. Added `tests/test_image_ops_guard.py`
+  (8 tests, no hardware): asserts `ValueError` raised when `clean=True,
+  target_path='/'` without `allow_root_wipe` (and via `restore_snapshot`),
+  asserts the guard does NOT fire for `clean=False`, non-root targets, or
+  explicit `allow_root_wipe=True`, and asserts `FileNotFoundError` beats the
+  guard so users get the more specific error first. Verified RED→GREEN by
+  flipping the source guard's predicate to `False` (3 tests fail), then
+  reverting (8/8 pass; full unit suite now 48/48).
 
 - [ ] **5. `sync_directory` with `delete_orphans`, both directions.**
   No coverage today. Build a small local tree, `sync_directory(direction=upload,
