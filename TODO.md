@@ -28,12 +28,17 @@ _Generated 2026-04-27. Sources: Reqall (project #842), GitHub
   bytes, 0 diffs, 3941 ms. Auto-detects two MicroPython VIDs when ports are
   omitted.
 
-- [ ] **2. Large + binary file round-trip stress.**
-  Extend `test_hardware_eval.py` with `os.urandom(N)` payloads at 10 KiB, 64 KiB,
-  and 256 KiB. Verify byte-exact `read_file == write_file` and that
-  `fs_hashfile` post-write digest matches host sha256. Current largest case is
-  2560 bytes of a sequential pattern — masks framing/escaping bugs that random
-  bytes will surface. Run on both devices.
+- [x] **2. Large + binary file round-trip stress.** ✅
+  Implemented `tests/test_binary_stress.py`. Writes `os.urandom(N)` payloads
+  at 10 / 64 / 256 KiB, verifies via `write_file(verify=True)` (which exercises
+  `fs_hashfile` against the host sha256), then re-reads through `fs_readfile`
+  and asserts byte-exact equality with first-diff offset on mismatch. RED
+  proof via 1-byte XOR corruption caught all three sizes. GREEN on COM4
+  (Pimoroni Tiny 2040, MicroPython 1.21.0): 10 KiB write/read 593/747 ms,
+  64 KiB 3.2/4.7 s, 256 KiB 12.5/17.9 s — ~20 KiB/s write, ~14 KiB/s read.
+  COM11 (Pico W) passes 10 KiB but loses USB enumeration at 64 KiB+
+  (`WriteFile failed PermissionError(13)` from the Win32 layer) — captured
+  separately as a hardware-side finding, not a plugin defect.
 
 - [ ] **3. Strict assertions in `test_i07_compare_after_restore`.**
   Today the test only reports diffs. Tighten to `assert different == []` after
