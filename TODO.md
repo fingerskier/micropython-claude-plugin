@@ -63,12 +63,18 @@ _Generated 2026-04-27. Sources: Reqall (project #842), GitHub
   flipping the source guard's predicate to `False` (3 tests fail), then
   reverting (8/8 pass; full unit suite now 48/48).
 
-- [ ] **5. `sync_directory` with `delete_orphans`, both directions.**
-  No coverage today. Build a small local tree, `sync_directory(direction=upload,
-  delete_orphans=False)`, delete one local file, re-sync with
-  `delete_orphans=True`, assert remote orphan was removed. Mirror test for
-  `download`. Assert NEWEST + `delete_orphans=True` is a no-op (matches
-  documented behavior in `file_ops.py:389`).
+- [x] **5. `sync_directory` with `delete_orphans`, both directions.** ✅
+  Implemented `tests/test_sync_directory_orphans.py` (hardware, sandbox at
+  `/sync_orphan_test`). Three subtests: (a) UPLOAD → seed three files,
+  delete one locally, re-sync with `delete_orphans=False` and assert remote
+  still has all three (proves opt-in default), then re-sync with
+  `delete_orphans=True` and assert orphan gone; (b) DOWNLOAD mirror with the
+  one-file-deleted-on-device case; (c) NEWEST + `delete_orphans=True` is a
+  no-op — asserts the documented "delete_orphans ignored" warning in the
+  results list and asserts no files vanished from either side. Sandbox
+  wiped on entry/exit so the device's normal filesystem is untouched.
+  Verified RED (mutated `if delete_orphans:` to `if False and delete_orphans:`
+  → 3/3 fail) → GREEN on COM4 (3/3 PASS, unit suite still 48/48).
 
 - [ ] **6. Concurrent two-device sessions don't cross-talk.**
   Construct two `MicroPythonDevice` instances (COM3, COM4) in one process,
